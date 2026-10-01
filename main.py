@@ -297,32 +297,37 @@ def auto_choice(page: Page, schedule: list):
     """
     遍历每日打卡任务，自动筛选出当天未完成的视频并逐个播放
 
-    判断逻辑：
-    1. 从"完成N/M"文本解析已完成数和总数
-    2. 未完成的才进入，且只处理日期 <= 今天的任务
-    3. 每个任务可能有多个视频（div[data-type="2"]），逐个在新标签页打开
+    策略：
+    1. 优先淦今天的任务
+    2. 今天的干完了，再回头补之前的（从大日期到小日期倒着补）
+    3. 每个任务可能有多个视频，逐个在新标签页打开
     4. 视频播放带重试保护
     """
-    logger.info("自动选择任务")
-    now_date_month = datetime.now().month
-    now_date_day = datetime.now().day
+    logger.info("开始扫荡任务...")
+
+    now = datetime.now()
+    now_date_month = now.month
+    now_date_day = now.day
+
+    # 把所有日期解析出来分个类
+    today_item = None
+    past_items = []  # (month, day, item)
 
     for item in schedule:
         match = re.search(r'完成(\d+)/(\d+)', item["completion"])
         if not match:
-            logger.error(f'{item["date"]} 任务：无法解析')
+            logger.error(f'{item["date"]} 任务：看不懂完成状态')
             quit_ewt(1)
 
         done = int(match.group(1))
         total = int(match.group(2))
-        logger.info(f'{item["date"]} 任务：完成 {done}/{total}')
+        logger.info(f'{item["date"]} 任务：干了 {done}/{total}')
 
-        # 全部完成则跳过
+        # 全部完成直接跳过
         if done >= total:
-            logger.info(f'{item["date"]} 任务：全部完成，跳过')
             continue
 
-        # 解析日期，跳过未来的任务
+        # 解析日期
         date_match = re.search(r'(\d{1,2})月(\d{1,2})日', item["date"])
         if not date_match:
             continue
@@ -330,60 +335,95 @@ def auto_choice(page: Page, schedule: list):
         month = int(date_match.group(1))
         day = int(date_match.group(2))
 
-        if month > now_date_month or day > now_date_day:
-            logger.info(f'{item["date"]} 任务：未来任务，跳过')
+        # 未来的任务不管
+        if month > now_date_month or (month == now_date_month and day > now_date_day):
+            logger.info(f'{item["date"]} 任务：还没到日子呢，跳过')
             continue
 
-        # 点击当前日期的任务条目，切换到对应视图
+        if month == now_date_month and day == now_date_day:
+            today_item = item
+        else:
+            past_items.append((month, day, item))
+
+    # === 第一阶段：淦今天的 ===
+    if today_item:
+        logger.info(f'🔥 先淦今天的：{today_item["date"]}')
+        _process_date(page, today_item)
+    else:
+        logger.info('👀 今天的任务已经全部干完了')
+
+    # === 第二阶段：回头补之前的（从近到远倒着补）===
+    if past_items:
+        past_items.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        logger.info(f'📦 今天的搞完了，回头补之前的，共 {len(past_items)} 天有待办')
+        for month, day, item in past_items:
+            logger.info(f'⏪ 补 {item["date"]} 的任务')
+            _process_date(page, item)
+
+    logger.info('🎉 所有任务已扫荡完毕')
+
+
+def _process_date(page: Page, item: dict):
+    """处理某一天的任务：点进去、播视频"""
+    try:
         item["locator"].click()
-        page.wait_for_timeout(1000)  # 等待页面渲染更新
+    except Exception:
+        logger.warning(f'{item["date"]} 任务：点不进去，跳过')
+        return
+    page.wait_for_timeout(1000)
 
-        # 页面中 div[data-type="2"] 是视频入口按钮，最后一个通常是"查看更多"需排除
-        buttons = page.locator('div[data-type="2"]')
-        count = buttons.count() - 1
-        logger.info(f'{item["date"]} 任务：找到 {count} 个视频内容')
+    buttons = page.locator('div[data-type="2"]')
+    count = buttons.count() - 1
+    logger.info(f'{item["date"]} 任务：翻到 {count} 个视频')
 
-        for i in range(count):
-            btn = buttons.nth(i)
+    for i in range(count):
+        btn = buttons.nth(i)
+        try:
             btn.wait_for(state="visible", timeout=5000)
+        except Exception:
+            continue
 
-            # 检查按钮上的 data-finish 属性，已学完则跳过
-            if btn.get_attribute("data-finish") == "true":
-                logger.info(f'{item["date"]} 任务：第 {i + 1} 个视频已学完，跳过')
-                continue
+        # 检查是不是已经学完了
+        if btn.get_attribute("data-finish") == "true":
+            logger.info(f'{item["date"]} 任务：第 {i + 1} 个视频早就看完了，跳过')
+            continue
 
-            # 点击视频按钮，等待新标签页
-            with page.context.expect_page() as video_page_info:
+        # 点开视频
+        try:
+            with page.context.expect_page(timeout=15000) as video_page_info:
                 btn.click()
-                logger.info(f'{item["date"]} 任务：点击第 {i + 1} 个视频')
-
+                logger.info(f'{item["date"]} 任务：冲第 {i + 1} 个视频')
             video_page = video_page_info.value
-            if video_page is None:
-                logger.error("打开视频页面失败")
-                continue
+        except (PwTimeoutError, Exception):
+            logger.warning(f'{item["date"]} 任务：第 {i + 1} 个视频没打开，算了')
+            continue
+        if video_page is None:
+            continue
 
-            video_page.wait_for_load_state()
-            logger.info(f"打开视频：{video_page.title()}({video_page.url})")
-            # 等待网络请求完成，确保视频元数据已加载
-            video_page.wait_for_load_state("networkidle")
+        video_page.wait_for_load_state()
+        logger.info(f"打开视频：{video_page.title()}({video_page.url[:60]}...)")
+        video_page.wait_for_load_state("networkidle")
 
-            # 播放视频，失败时自动重试 3 次
-            retry_call(
-                video_pass,
-                args=(video_page,),
-                kwargs={"monitor_selector": 'span[data-ac="check-pass"]'},
-                max_attempts=3, delay=2.0,
-                exceptions=(PwTimeoutError, Exception),
-            )
+        # 开淦，不行就重试3次
+        retry_call(
+            video_pass,
+            args=(video_page,),
+            kwargs={"monitor_selector": 'span[data-ac="check-pass"]'},
+            max_attempts=3, delay=2.0,
+            exceptions=(PwTimeoutError, Exception),
+        )
 
-            # 关闭已播放完的视频标签页，避免标签页堆积过多
+        # 关掉视频标签页
+        try:
             video_page.close()
-            logger.info("已关闭视频标签页")
+            logger.info("视频看完了，关掉")
+        except (PwError, Exception):
+            pass
 
-            # 视频间随机延迟（2~8s），模拟人工切换任务的间隔，降低请求频率特征
-            interval = round(random.uniform(2.0, 8.0), 1)
-            logger.info(f"等待 {interval}s 后进入下一个视频")
-            time.sleep(interval)
+        # 歇口气再搞下一个
+        interval = round(random.uniform(2.0, 8.0), 1)
+        logger.info(f"歇 {interval}s 再战")
+        time.sleep(interval)
 
 
 # ── 视频播放相关 ──────────────────────────────────────────
@@ -412,10 +452,11 @@ def video_pass(page: Page, monitor_selector: Optional[str] = None) -> bool:
     """
     播放视频并持续监视页面状态
 
-    播放期间每隔 300ms 做一次轮询，同时检查三件事：
-    1. 视频是否接近播放完毕（currentTime >= duration - 1 或 ended 属性为 true）
-    2. 目标控件（如中途弹出的确认按钮）是否出现，出现则自动点击
-    3. 严格超时保护，防止 duration 为 NaN/Infinity 时死循环
+    播放期间每隔 300ms 做一次轮询，同时检查四件事：
+    1. 视频是否接近播放完毕
+    2. 目标控件（如中途弹出的确认按钮）是否出现
+    3. 通用弹窗检测：用户协议、脚本检测、违规提醒等
+    4. 严格超时保护
 
     参数 monitor_selector 为 CSS 选择器，用于监视需要自动点击的控件。
     设置超时上限 = 视频时长/倍速 + 60s 硬上限余量。
@@ -424,63 +465,80 @@ def video_pass(page: Page, monitor_selector: Optional[str] = None) -> bool:
         page.wait_for_selector('video.vjs-tech', timeout=10000)
         video = page.locator('video.vjs-tech')
 
-        # 静音：浏览器自动播放策略要求必须用户交互后才能有声播放
+        # 静音
         video.evaluate('video => video.muted = true')
         logger.info("视频已静音")
 
-        # 尝试播放，如果 play() Promise 被拒绝（如自动播放策略拦截），
-        # 通过一次点击确保用户手势激活
+        # 尝试播放
         try:
             video.evaluate('video => video.play()')
         except Exception:
             page.locator('video.vjs-tech').click(timeout=1000)
             video.evaluate('video => video.play()')
 
-        # 设置倍速（随机 1.8~2.5 倍，每次不同以降低模式识别风险）
-        target_speed = round(random.uniform(1.8, 2.5), 2)
-        set_video_speed(page, target_speed)
-
-        # 控制栏出现说明视频播放器已完全初始化
+        target_speed = 2.0
+        # 设置 2.0 倍速（JS 直接设 playbackRate）
         try:
             page.wait_for_selector('.vjs-control-bar', state='visible', timeout=5000)
-        except PwTimeoutError:
-            logger.warning("控制栏未出现，但继续等待播放结束")
+            page.evaluate('() => { const v = document.querySelector("video.vjs-tech"); if(v) v.playbackRate = 2.0; }')
+            logger.info("已设为 2.0 倍速")
+        except Exception:
+            logger.warning("控制栏未出现，使用 1x 播放")
 
-        # 获取时长和倍速，取硬上限 1800s 防止 NaN/Infinity/0
-        duration = page.evaluate('() => document.querySelector("video.vjs-tech").duration')
-        speed = page.evaluate('() => document.querySelector("video.vjs-tech").playbackRate')
+        # 获取时长和倍速
+        try:
+            duration = page.evaluate('() => document.querySelector("video.vjs-tech").duration')
+        except Exception:
+            duration = 1800
+        speed = target_speed
         if not (isinstance(duration, (int, float)) and duration > 0):
-            duration = 1800  # 取默认值 30min 防止超时保护失效
+            duration = 1800
         if not (isinstance(speed, (int, float)) and speed > 0):
             speed = 1.0
         estimated_time = (duration / speed) + 60
         deadline = time.time() + estimated_time
 
         logger.info(f"开始播放，总时长 {duration:.1f}s，倍速 {speed}x")
+
+        # 通用弹窗检测：需要自动关闭的弹窗关键词
+        popup_keywords = [
+            '禁止使用脚本', '脚本检测', '违规操作',
+            '用户协议', '服务协议', '同意并继续',
+            '第三方辅助工具', '检测到网络不稳定', '视频已暂停',
+            '第三方工具',
+        ]
+        dismiss_keywords = [
+            '我知道了', '确定', '确认', '同意',
+            '关闭', '知道了',
+        ]
+
         while True:
-            # 超时保护
             if time.time() > deadline:
                 logger.warning(f"播放超时（{estimated_time:.1f}s），强制结束")
                 break
 
-            # 检测视频进度是否接近末尾（currentTime 或 ended 属性）
-            is_finished = page.evaluate('''
-                () => {
-                    const v = document.querySelector('video.vjs-tech');
-                    if (!v) return true;          // 视频元素已消失，视为完成
-                    if (v.ended) return true;      // ended 属性更可靠
-                    const dur = v.duration;
-                    // duration 有效时检查是否剩不到 1s
-                    return (typeof dur === 'number' && isFinite(dur) && dur > 0)
-                        ? v.currentTime >= dur - 1
-                        : false;
-                }
-            ''')
-            if is_finished:
-                logger.info("视频播放完成")
+            # 检测视频进度
+            try:
+                is_finished = page.evaluate('''
+                    () => {
+                        const v = document.querySelector('video.vjs-tech');
+                        if (!v) return true;
+                        if (v.ended) return true;
+                        const dur = v.duration;
+                        return (typeof dur === 'number' && isFinite(dur) && dur > 0)
+                            ? v.currentTime >= dur - 1
+                            : false;
+                    }
+                ''')
+                if is_finished:
+                    logger.info("视频播放完成")
+                    break
+            except (PwError, Exception):
+                # 页面已关闭/崩溃，视为视频结束
+                logger.warning("视频页面已关闭，视为播放完成")
                 break
 
-            # 检查目标控件是否弹出
+            # 检查目标控件（原有）
             if monitor_selector:
                 try:
                     target = page.locator(monitor_selector).first
@@ -488,17 +546,55 @@ def video_pass(page: Page, monitor_selector: Optional[str] = None) -> bool:
                         target.click(timeout=200)
                         logger.info("检测到目标控件并已点击")
                         time.sleep(0.5)
+                        continue
                 except PwTimeoutError:
                     pass
+                except (PwError, Exception):
+                    pass
 
-            # 轮询间隔加入随机抖动（200~600ms），避免固定频率被识别为自动化行为
+            # 通用弹窗检测：遍历关键词找弹窗
+            for kw in popup_keywords:
+                try:
+                    kw_el = page.locator(f'text={kw}').first
+                    if kw_el.is_visible(timeout=200):
+                        logger.warning(f'⚠️ 检测到弹窗: "{kw}"')
+                        # 找关闭按钮
+                        dismissed = False
+                        for dk in dismiss_keywords:
+                            try:
+                                btn = page.locator(f'text={dk}').first
+                                if btn.is_visible(timeout=200):
+                                    btn.click(timeout=200)
+                                    logger.info(f'✅ 已点击 "{dk}"')
+                                    dismissed = True
+                                    time.sleep(1)
+                                    break
+                            except:
+                                continue
+                        # 弹窗关闭后恢复播放（倍速保留浏览器原有设置，不重新设）
+                        if dismissed:
+                            try:
+                                video = page.locator('video.vjs-tech')
+                                video.evaluate('video => { video.muted = true; video.play(); }')
+                                logger.info('↻ 已恢复播放')
+                            except Exception:
+                                pass
+                        break
+                except:
+                    continue
+
+            # 轮询间隔
             time.sleep(random.uniform(0.2, 0.6))
 
         logger.info("视频播放流程结束")
         return True
     except PwTimeoutError as e:
         logger.error(f"播放超时: {e}")
-        quit_ewt(1)
+        # 不退出，让调用方处理
+        return False
+    except (PwError, Exception) as e:
+        logger.warning(f"视频播放异常: {e}")
+        return False
 
 
 # ── 程序入口 ──────────────────────────────────────────────
@@ -522,18 +618,26 @@ if __name__ == "__main__":
         # 优先查找 exe 所在目录下的 chrome-win64/chrome.exe
         exe_dir = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__))
         chrome_path = os.path.join(exe_dir, "chrome-win64", "chrome.exe")
+        chrome_args = [
+            '--disable-blink-features=AutomationControlled',
+            '--no-sandbox',
+            '--disable-gpu',
+            '--disable-software-rasterizer',
+            '--disable-dev-shm-usage',
+        ]
         if os.path.exists(chrome_path):
             logger.info(f"使用本地 Chromium：{chrome_path}")
             browser = p.chromium.launch(
                 headless=headless_mode,
                 executable_path=chrome_path,
-                args=['--disable-blink-features=AutomationControlled'],
+                args=chrome_args,
             )
         else:
-            # 回退到 Playwright 自动管理的浏览器
+            # 回退到系统 Chrome（不用 Playwright 内置浏览器）
             browser = p.chromium.launch(
                 headless=headless_mode,
-                args=['--disable-blink-features=AutomationControlled'],
+                executable_path='/usr/bin/google-chrome',
+                args=chrome_args,
             )
         context = browser.new_context()
         main_page = context.new_page()
@@ -581,7 +685,6 @@ if __name__ == "__main__":
 
         auto_choice(page=detail_page, schedule=schedules)
 
-        # 所有任务执行完毕后保持窗口不关闭
-        while True:
-            input("按任意键退出EazyPassEWT...")
-            quit_ewt(0)
+        # 所有任务执行完毕后退出
+        logger.info("🎉 全部淦完，收工！")
+        quit_ewt(0)
