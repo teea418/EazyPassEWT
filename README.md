@@ -1,9 +1,12 @@
 # EazyPassEWT
-[![GitHub followers](https://img.shields.io/github/followers/alsunmengy?style=social&label=Follow)](https://github.com/alsunmengy)
+<a href="https://github.com/teea418/EazyPassEWT/stargazers"><img src="https://raw.githubusercontent.com/alsunmengy/EazyPassEWT/master/.github/badges/star-banner.svg" alt="点一下 Star" height="60"></a>
+<br>
+<a href="https://github.com/alsunmengy"><img src="https://raw.githubusercontent.com/alsunmengy/EazyPassEWT/master/.github/badges/follow-me.svg" alt="关注我" height="60"></a>
+
 
 ## Star History
 
-[![Star history](https://raw.githubusercontent.com/teea418/EazyPassEWT/main/.github/star-history/chart.svg)](https://github.com/teea418/EazyPassEWT/stargazers)
+[![Star history](https://raw.githubusercontent.com/alsunmengy/EazyPassEWT/master/.github/star-history/chart.svg)](https://github.com/teea418/EazyPassEWT/stargazers)
 
 > 升学e网通 (ewt360.com) 自动化学习辅助工具
 >

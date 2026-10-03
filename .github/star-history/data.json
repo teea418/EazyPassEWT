@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "repository": "alsunmengy/EazyPassEWT",
+  "backfilledAt": "2026-10-01T11:43:15.532Z",
+  "backfill": [
+    {
+      "date": "2026-07-20",
+      "stars": 1
+    }
+  ],
+  "snapshots": [
+    {
+      "date": "2026-10-01",
+      "stars": 1
+    },
+    {
+      "date": "2026-10-02",
+      "stars": 1
+    }
+  ]
+}
